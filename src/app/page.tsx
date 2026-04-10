@@ -68,9 +68,9 @@ export default function Home() {
     [origin, config]
   );
 
-  // Split deliveries by type
+  // Split deliveries by type (unclassified defaults to furgão)
   const furgaoDeliveries = useMemo(
-    () => deliveries.filter((d) => d.vehicleType === "furgao"),
+    () => deliveries.filter((d) => d.vehicleType !== "caminhao"),
     [deliveries]
   );
   const caminhaoDeliveries = useMemo(
