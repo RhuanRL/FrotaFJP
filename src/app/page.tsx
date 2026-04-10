@@ -101,30 +101,31 @@ export default function Home() {
 
       setIsGeocoding(true);
       try {
-        // Process in chunks of 6 to avoid serverless timeout
-        const CHUNK = 6;
         const geoMap = new Map<string, { lat: number; lng: number; address: string; city: string; state: string }>();
 
-        for (let i = 0; i < cepsToGeocode.length; i += CHUNK) {
-          const chunk = cepsToGeocode.slice(i, i + CHUNK);
-          try {
-            const res = await fetch("/api/geocode", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ ceps: chunk }),
-            });
-
-            if (res.ok) {
-              const data = await res.json();
-              if (data.results) {
-                data.results.forEach((r: { cep: string; lat: number; lng: number; address: string; city: string; state: string } | null) => {
-                  if (r) geoMap.set(r.cep.replace(/\D/g, ""), r);
-                });
+        // Process 3 CEPs at a time in parallel, each as its own request
+        const PARALLEL = 3;
+        for (let i = 0; i < cepsToGeocode.length; i += PARALLEL) {
+          const batch = cepsToGeocode.slice(i, i + PARALLEL);
+          const promises = batch.map(async (cep) => {
+            try {
+              const res = await fetch("/api/geocode", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ ceps: [cep] }),
+              });
+              if (res.ok) {
+                const data = await res.json();
+                if (data.results?.[0]) {
+                  const r = data.results[0];
+                  geoMap.set(r.cep.replace(/\D/g, ""), r);
+                }
               }
+            } catch {
+              // Skip this CEP
             }
-          } catch {
-            // Continue with next chunk
-          }
+          });
+          await Promise.all(promises);
         }
 
         return newDeliveries.map((d) => {
