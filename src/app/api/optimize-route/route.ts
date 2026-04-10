@@ -6,14 +6,6 @@ interface RoutePoint {
   id: string;
 }
 
-interface OSRMRoute {
-  distance: number;
-  duration: number;
-  geometry: {
-    coordinates: [number, number][];
-  };
-}
-
 // Haversine distance in meters
 function haversine(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371000;
@@ -28,7 +20,7 @@ function haversine(lat1: number, lon1: number, lat2: number, lon2: number): numb
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// Build distance matrix using Haversine (fallback, no API needed)
+// Build distance matrix using Haversine (fallback)
 function buildHaversineMatrix(points: RoutePoint[]): {
   distances: number[][];
   durations: number[][];
@@ -41,9 +33,7 @@ function buildHaversineMatrix(points: RoutePoint[]): {
     for (let j = 0; j < n; j++) {
       if (i !== j) {
         const dist = haversine(points[i].lat, points[i].lng, points[j].lat, points[j].lng);
-        // Multiply by 1.3 to approximate road distance vs straight line
         distances[i][j] = dist * 1.3;
-        // Assume average speed of 40 km/h in urban areas
         durations[i][j] = (distances[i][j] / 1000 / 40) * 3600;
       }
     }
@@ -65,7 +55,6 @@ async function getDistanceMatrix(
     );
 
     if (!res.ok) {
-      console.error(`OSRM table API returned ${res.status}`);
       const fallback = buildHaversineMatrix(points);
       return { ...fallback, usedFallback: true };
     }
@@ -73,12 +62,10 @@ async function getDistanceMatrix(
     const data = await res.json();
 
     if (data.code !== "Ok" || !data.distances || !data.durations) {
-      console.error(`OSRM table API error: ${data.code} - ${data.message || "unknown"}`);
       const fallback = buildHaversineMatrix(points);
       return { ...fallback, usedFallback: true };
     }
 
-    // Check for null values in the matrix (unreachable points)
     let hasNull = false;
     for (const row of data.distances) {
       if (row.some((v: number | null) => v === null)) {
@@ -88,7 +75,6 @@ async function getDistanceMatrix(
     }
 
     if (hasNull) {
-      console.error("OSRM returned null distances (unreachable points)");
       const fallback = buildHaversineMatrix(points);
       return { ...fallback, usedFallback: true };
     }
@@ -98,22 +84,17 @@ async function getDistanceMatrix(
       durations: data.durations,
       usedFallback: false,
     };
-  } catch (err) {
-    console.error("OSRM table API failed:", (err as Error).message);
+  } catch {
     const fallback = buildHaversineMatrix(points);
     return { ...fallback, usedFallback: true };
   }
 }
 
 // Nearest Neighbor heuristic for TSP
-function nearestNeighborTSP(
-  distances: number[][],
-  startIndex: number
-): number[] {
+function nearestNeighborTSP(distances: number[][], startIndex: number): number[] {
   const n = distances.length;
   const visited = new Set<number>([startIndex]);
   const tour = [startIndex];
-
   let current = startIndex;
 
   while (visited.size < n) {
@@ -128,7 +109,6 @@ function nearestNeighborTSP(
     }
 
     if (nearest === -1) break;
-
     visited.add(nearest);
     tour.push(nearest);
     current = nearest;
@@ -163,19 +143,15 @@ function twoOptImprove(tour: number[], distances: number[][]): number[] {
   return best;
 }
 
-// Get actual route geometry from OSRM (in chunks if needed)
-async function getRouteGeometry(
-  points: RoutePoint[],
-  order: number[]
-): Promise<OSRMRoute | null> {
-  const orderedCoords = order
-    .map((i) => `${points[i].lng},${points[i].lat}`)
-    .join(";");
-
+// Fetch real road geometry between two points from OSRM
+async function getSegmentGeometry(
+  from: RoutePoint,
+  to: RoutePoint
+): Promise<{ coordinates: [number, number][]; distance: number; duration: number } | null> {
   try {
     const res = await fetch(
-      `https://router.project-osrm.org/route/v1/driving/${orderedCoords}?overview=full&geometries=geojson&steps=false`,
-      { signal: AbortSignal.timeout(15000) }
+      `https://router.project-osrm.org/route/v1/driving/${from.lng},${from.lat};${to.lng},${to.lat}?overview=full&geometries=geojson`,
+      { signal: AbortSignal.timeout(10000) }
     );
 
     if (!res.ok) return null;
@@ -183,18 +159,81 @@ async function getRouteGeometry(
     const data = await res.json();
     if (data.code !== "Ok" || !data.routes || data.routes.length === 0) return null;
 
-    return data.routes[0] as OSRMRoute;
+    const route = data.routes[0];
+    return {
+      coordinates: route.geometry.coordinates.map(
+        (c: [number, number]) => [c[1], c[0]] as [number, number]
+      ),
+      distance: route.distance,
+      duration: route.duration,
+    };
   } catch {
     return null;
   }
 }
 
-// Build a simple geometry from points (straight lines as fallback)
-function buildSimpleGeometry(
+// Fetch real road geometry for the full route, segment by segment
+async function getFullRouteGeometry(
   points: RoutePoint[],
   order: number[]
-): [number, number][] {
-  return order.map((i) => [points[i].lat, points[i].lng] as [number, number]);
+): Promise<{
+  geometry: [number, number][];
+  totalDistance: number;
+  totalDuration: number;
+  legDistances: number[];
+  legDurations: number[];
+  isReal: boolean;
+}> {
+  const allCoords: [number, number][] = [];
+  let totalDistance = 0;
+  let totalDuration = 0;
+  const legDistances: number[] = [];
+  const legDurations: number[] = [];
+  let allSuccess = true;
+
+  // Fetch each segment (A→B, B→C, C→D, ..., last→origin)
+  for (let i = 0; i < order.length - 1; i++) {
+    const from = points[order[i]];
+    const to = points[order[i + 1]];
+
+    const segment = await getSegmentGeometry(from, to);
+
+    if (segment) {
+      // Don't duplicate the first point of each segment (it's the last of the previous)
+      if (allCoords.length > 0) {
+        allCoords.push(...segment.coordinates.slice(1));
+      } else {
+        allCoords.push(...segment.coordinates);
+      }
+      totalDistance += segment.distance;
+      totalDuration += segment.duration;
+      legDistances.push(segment.distance);
+      legDurations.push(segment.duration);
+    } else {
+      // Fallback for this segment: straight line
+      allSuccess = false;
+      allCoords.push([from.lat, from.lng], [to.lat, to.lng]);
+      const dist = haversine(from.lat, from.lng, to.lat, to.lng) * 1.3;
+      totalDistance += dist;
+      totalDuration += (dist / 1000 / 40) * 3600;
+      legDistances.push(dist);
+      legDurations.push((dist / 1000 / 40) * 3600);
+    }
+
+    // Small delay between requests to be respectful to OSRM
+    if (i < order.length - 2) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+
+  return {
+    geometry: allCoords,
+    totalDistance,
+    totalDuration,
+    legDistances,
+    legDurations,
+    isReal: allSuccess,
+  };
 }
 
 export async function POST(request: NextRequest) {
@@ -221,53 +260,39 @@ export async function POST(request: NextRequest) {
     ];
 
     // Get distance matrix (with Haversine fallback)
-    const { distances, durations, usedFallback } = await getDistanceMatrix(points);
+    const { distances, durations } = await getDistanceMatrix(points);
 
     // Solve TSP with nearest neighbor + 2-opt
     let tour = nearestNeighborTSP(distances, 0);
     tour = twoOptImprove(tour, distances);
 
-    // Add return to origin at the end
+    // Add return to origin
     const tourWithReturn = [...tour, 0];
 
-    // Try to get real route geometry from OSRM
-    const route = await getRouteGeometry(points, tourWithReturn);
+    // Fetch real road geometry segment by segment
+    const routeData = await getFullRouteGeometry(points, tourWithReturn);
 
-    // Build leg details
+    // Build leg details using real distances when available
     const legs = tour.slice(1).map((pointIdx, legIdx) => ({
       deliveryId: points[pointIdx].id,
       order: legIdx + 1,
-      distanceKm: Math.round((distances[tour[legIdx]][pointIdx] / 1000) * 10) / 10,
-      timeMinutes: Math.round(durations[tour[legIdx]][pointIdx] / 60),
+      distanceKm:
+        Math.round((routeData.legDistances[legIdx] / 1000) * 10) / 10,
+      timeMinutes: Math.round(routeData.legDurations[legIdx] / 60),
     }));
 
-    // Add return leg
-    const lastStop = tour[tour.length - 1];
+    // Return leg (last delivery → origin)
+    const returnLegIdx = tour.length - 1;
     legs.push({
       deliveryId: "return-origin",
       order: legs.length + 1,
-      distanceKm: Math.round((distances[lastStop][0] / 1000) * 10) / 10,
-      timeMinutes: Math.round(durations[lastStop][0] / 60),
+      distanceKm:
+        Math.round((routeData.legDistances[returnLegIdx] / 1000) * 10) / 10,
+      timeMinutes: Math.round(routeData.legDurations[returnLegIdx] / 60),
     });
 
-    let totalDistanceKm: number;
-    let totalTimeMinutes: number;
-    let geometry: [number, number][];
-
-    if (route) {
-      // Use OSRM real route data
-      totalDistanceKm = Math.round((route.distance / 1000) * 10) / 10;
-      totalTimeMinutes = Math.round(route.duration / 60);
-      geometry = route.geometry.coordinates.map(
-        (coord) => [coord[1], coord[0]] as [number, number]
-      );
-    } else {
-      // Fallback: sum leg distances and use straight lines
-      totalDistanceKm = legs.reduce((sum, l) => sum + l.distanceKm, 0);
-      totalTimeMinutes = legs.reduce((sum, l) => sum + l.timeMinutes, 0);
-      geometry = buildSimpleGeometry(points, tourWithReturn);
-    }
-
+    const totalDistanceKm = Math.round((routeData.totalDistance / 1000) * 10) / 10;
+    const totalTimeMinutes = Math.round(routeData.totalDuration / 60);
     const fuelLiters = Math.round((totalDistanceKm / consumption) * 10) / 10;
     const fuelCost = Math.round(fuelLiters * fuelPrice * 100) / 100;
 
@@ -278,8 +303,8 @@ export async function POST(request: NextRequest) {
       totalTimeMinutes,
       fuelLiters,
       fuelCost,
-      geometry,
-      approximate: usedFallback || !route,
+      geometry: routeData.geometry,
+      approximate: !routeData.isReal,
     });
   } catch (err) {
     return NextResponse.json(
