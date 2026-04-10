@@ -90,6 +90,17 @@ async function getDistanceMatrix(
   }
 }
 
+// Calculate total round-trip distance (origin → stops → origin)
+function tourDistance(tour: number[], distances: number[][]): number {
+  let total = 0;
+  for (let i = 0; i < tour.length - 1; i++) {
+    total += distances[tour[i]][tour[i + 1]];
+  }
+  // Return to origin
+  total += distances[tour[tour.length - 1]][tour[0]];
+  return total;
+}
+
 // Nearest Neighbor heuristic for TSP
 function nearestNeighborTSP(distances: number[][], startIndex: number): number[] {
   const n = distances.length;
@@ -117,23 +128,52 @@ function nearestNeighborTSP(distances: number[][], startIndex: number): number[]
   return tour;
 }
 
-// 2-opt improvement
+// Nearest Neighbor from multiple starting nodes, keep the best
+function multiStartNearestNeighbor(distances: number[][]): number[] {
+  const n = distances.length;
+  let bestTour = nearestNeighborTSP(distances, 0);
+  let bestDist = tourDistance(bestTour, distances);
+
+  // Try starting from each node, but always fix origin at position 0
+  for (let start = 1; start < n; start++) {
+    const trial = nearestNeighborTSP(distances, start);
+
+    // Rotate so that node 0 (origin) is first
+    const originIdx = trial.indexOf(0);
+    const rotated = [...trial.slice(originIdx), ...trial.slice(0, originIdx)];
+
+    const dist = tourDistance(rotated, distances);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestTour = rotated;
+    }
+  }
+
+  return bestTour;
+}
+
+// 2-opt improvement considering round trip back to origin
 function twoOptImprove(tour: number[], distances: number[][]): number[] {
-  let improved = true;
+  const n = tour.length;
   let best = [...tour];
+  let bestDist = tourDistance(best, distances);
+  let improved = true;
 
   while (improved) {
     improved = false;
-    for (let i = 1; i < best.length - 1; i++) {
-      for (let j = i + 1; j < best.length; j++) {
-        const currentDist =
-          distances[best[i - 1]][best[i]] + distances[best[j]][best[(j + 1) % best.length]];
-        const newDist =
-          distances[best[i - 1]][best[j]] + distances[best[i]][best[(j + 1) % best.length]];
+    for (let i = 1; i < n - 1; i++) {
+      for (let j = i + 1; j < n; j++) {
+        // Reverse segment between i and j
+        const candidate = [
+          ...best.slice(0, i),
+          ...best.slice(i, j + 1).reverse(),
+          ...best.slice(j + 1),
+        ];
+        const candidateDist = tourDistance(candidate, distances);
 
-        if (newDist < currentDist) {
-          const reversed = best.slice(i, j + 1).reverse();
-          best = [...best.slice(0, i), ...reversed, ...best.slice(j + 1)];
+        if (candidateDist < bestDist - 0.01) {
+          best = candidate;
+          bestDist = candidateDist;
           improved = true;
         }
       }
@@ -141,6 +181,48 @@ function twoOptImprove(tour: number[], distances: number[][]): number[] {
   }
 
   return best;
+}
+
+// Or-opt: try moving each stop to its best position in the tour
+function orOptImprove(tour: number[], distances: number[][]): number[] {
+  let best = [...tour];
+  let bestDist = tourDistance(best, distances);
+  let improved = true;
+
+  while (improved) {
+    improved = false;
+    // Don't move origin (index 0)
+    for (let i = 1; i < best.length; i++) {
+      const node = best[i];
+      const without = [...best.slice(0, i), ...best.slice(i + 1)];
+
+      for (let j = 1; j <= without.length; j++) {
+        if (j === i) continue; // Same position
+        const candidate = [...without.slice(0, j), node, ...without.slice(j)];
+        const candidateDist = tourDistance(candidate, distances);
+
+        if (candidateDist < bestDist - 0.01) {
+          best = candidate;
+          bestDist = candidateDist;
+          improved = true;
+          break; // Restart outer loop
+        }
+      }
+      if (improved) break;
+    }
+  }
+
+  return best;
+}
+
+// Full optimization: multi-start NN → 2-opt → or-opt
+function optimizeTour(distances: number[][]): number[] {
+  let tour = multiStartNearestNeighbor(distances);
+  tour = twoOptImprove(tour, distances);
+  tour = orOptImprove(tour, distances);
+  // Run 2-opt again after or-opt for final polish
+  tour = twoOptImprove(tour, distances);
+  return tour;
 }
 
 // Fetch real road geometry between two points from OSRM
@@ -262,9 +344,8 @@ export async function POST(request: NextRequest) {
     // Get distance matrix (with Haversine fallback)
     const { distances, durations } = await getDistanceMatrix(points);
 
-    // Solve TSP with nearest neighbor + 2-opt
-    let tour = nearestNeighborTSP(distances, 0);
-    tour = twoOptImprove(tour, distances);
+    // Solve TSP: multi-start nearest neighbor → 2-opt → or-opt → 2-opt
+    const tour = optimizeTour(distances);
 
     // Add return to origin
     const tourWithReturn = [...tour, 0];
