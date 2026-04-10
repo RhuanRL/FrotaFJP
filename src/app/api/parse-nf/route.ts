@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import pdfParse from "pdf-parse";
 import { parseStringPromise } from "xml2js";
 
 interface ParsedNF {
@@ -106,6 +105,8 @@ function parseRelatorioPedidos(text: string): ParsedNF[] {
 }
 
 async function parsePDF(buffer: Buffer): Promise<ParsedNF[]> {
+  // Dynamic import to avoid pdf-parse initialization issues in serverless
+  const pdfParse = (await import("pdf-parse")).default;
   const data = await pdfParse(buffer);
   const text = data.text;
 
