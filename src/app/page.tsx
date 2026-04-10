@@ -93,45 +93,55 @@ export default function Home() {
 
   const geocodeDeliveries = useCallback(
     async (newDeliveries: Delivery[]): Promise<Delivery[]> => {
-      const cepsToGeocode = newDeliveries
-        .filter((d) => !d.lat || !d.lng)
-        .map((d) => d.cep);
+      const cepsToGeocode = [...new Set(
+        newDeliveries.filter((d) => !d.lat || !d.lng).map((d) => d.cep)
+      )];
 
       if (cepsToGeocode.length === 0) return newDeliveries;
 
       setIsGeocoding(true);
       try {
-        const res = await fetch("/api/geocode", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ceps: cepsToGeocode }),
-        });
+        // Process in chunks of 6 to avoid serverless timeout
+        const CHUNK = 6;
+        const geoMap = new Map<string, { lat: number; lng: number; address: string; city: string; state: string }>();
 
-        const data = await res.json();
+        for (let i = 0; i < cepsToGeocode.length; i += CHUNK) {
+          const chunk = cepsToGeocode.slice(i, i + CHUNK);
+          try {
+            const res = await fetch("/api/geocode", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ ceps: chunk }),
+            });
 
-        if (data.results) {
-          const geoMap = new Map<string, { lat: number; lng: number; address: string; city: string; state: string }>();
-          data.results.forEach((r: { cep: string; lat: number; lng: number; address: string; city: string; state: string } | null) => {
-            if (r) geoMap.set(r.cep.replace(/\D/g, ""), r);
-          });
-
-          return newDeliveries.map((d) => {
-            const cleanCep = d.cep.replace(/\D/g, "");
-            const geo = geoMap.get(cleanCep);
-            if (geo) {
-              return {
-                ...d,
-                lat: geo.lat,
-                lng: geo.lng,
-                address: d.address || geo.address,
-                city: d.city || geo.city,
-                state: d.state || geo.state,
-              };
+            if (res.ok) {
+              const data = await res.json();
+              if (data.results) {
+                data.results.forEach((r: { cep: string; lat: number; lng: number; address: string; city: string; state: string } | null) => {
+                  if (r) geoMap.set(r.cep.replace(/\D/g, ""), r);
+                });
+              }
             }
-            return d;
-          });
+          } catch {
+            // Continue with next chunk
+          }
         }
-        return newDeliveries;
+
+        return newDeliveries.map((d) => {
+          const cleanCep = d.cep.replace(/\D/g, "");
+          const geo = geoMap.get(cleanCep);
+          if (geo) {
+            return {
+              ...d,
+              lat: geo.lat,
+              lng: geo.lng,
+              address: d.address || geo.address,
+              city: d.city || geo.city,
+              state: d.state || geo.state,
+            };
+          }
+          return d;
+        });
       } catch {
         return newDeliveries;
       } finally {
