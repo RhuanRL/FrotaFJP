@@ -20,8 +20,7 @@ export default function DeliveryWindowBadge({
     for (const w of sorted) {
       if (now < w.cutoffTime) return w;
     }
-    const nextDay = sorted.find((w) => w.isNextDay);
-    return nextDay || null;
+    return sorted[0] || null;
   }
 
   const active = getActiveWindow();

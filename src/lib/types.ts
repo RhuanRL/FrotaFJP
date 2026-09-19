@@ -75,15 +75,15 @@ export const DEFAULT_CONFIG: AppConfig = {
     {
       id: "morning",
       name: "Manhã",
-      cutoffTime: "08:00",
+      cutoffTime: "09:00",
       departureTime: "09:00",
       isNextDay: false,
     },
     {
       id: "afternoon",
       name: "Tarde",
-      cutoffTime: "13:00",
-      departureTime: "14:00",
+      cutoffTime: "15:30",
+      departureTime: "16:00",
       isNextDay: false,
     },
     {
