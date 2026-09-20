@@ -112,6 +112,19 @@ export default function MapView({
       bounds.extend([delivery.lat, delivery.lng]);
     });
 
+    // Vertical line at the factory's longitude, splitting delivery zones
+    // (Nélio to the west / left, Helton to the east / right)
+    if (origin.lng) {
+      const latPad = 0.4;
+      L.polyline(
+        [
+          [origin.lat - latPad, origin.lng],
+          [origin.lat + latPad, origin.lng],
+        ],
+        { color: "#111827", weight: 2, dashArray: "6 6", opacity: 0.55 }
+      ).addTo(map);
+    }
+
     // Route polyline
     if (routeGeometry && routeGeometry.length > 0) {
       L.polyline(routeGeometry, {

@@ -1,5 +1,8 @@
 export type VehicleType = "furgao" | "caminhao";
 
+// The three delivery routes: local split by driver zone (Nélio/Helton) + long-distance (caminhão)
+export type RouteZone = "furgao-nelio" | "furgao-helton" | "caminhao";
+
 export interface Delivery {
   id: string;
   nfNumber: string;
@@ -14,7 +17,7 @@ export interface Delivery {
   value?: number;
   createdAt: string;
   distanceFromOrigin?: number; // km
-  vehicleType?: VehicleType;
+  vehicleType?: RouteZone;
 }
 
 export interface RouteStop {
@@ -108,7 +111,7 @@ export const DEFAULT_CONFIG: AppConfig = {
       name: "Caminhão VW 13.180",
       plate: "QTN2D49",
       type: "caminhao",
-      driver: "GERONY NUNES DE OLIVEIRA FILHO",
+      driver: "MARCELO",
       consumption: 5,
     },
   ],

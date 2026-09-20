@@ -120,9 +120,13 @@ export default function DeliveryTable({
                   )}
                 </td>
                 <td className="px-3 py-2">
-                  {delivery.vehicleType === "furgao" ? (
+                  {delivery.vehicleType === "furgao-nelio" ? (
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 text-xs font-medium">
-                      🚐
+                      🚐 Nélio
+                    </span>
+                  ) : delivery.vehicleType === "furgao-helton" ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 text-xs font-medium">
+                      🚐 Helton
                     </span>
                   ) : delivery.vehicleType === "caminhao" ? (
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-400 text-xs font-medium">

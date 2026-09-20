@@ -10,7 +10,7 @@ import DeliveryWindowBadge from "@/components/DeliveryWindowBadge";
 import ManualDeliveryForm from "@/components/ManualDeliveryForm";
 import VehicleTabs from "@/components/VehicleTabs";
 import ShareRoute from "@/components/ShareRoute";
-import { Delivery, AppConfig, VehicleType, haversineKm } from "@/lib/types";
+import { Delivery, AppConfig, RouteZone, haversineKm } from "@/lib/types";
 import { getConfig } from "@/lib/config-store";
 
 const MapView = dynamic(() => import("@/components/MapView"), {
@@ -36,13 +36,14 @@ interface RouteResult {
 export default function Home() {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [deliveries, setDeliveries] = useState<Delivery[]>([]);
-  const [routeFurgao, setRouteFurgao] = useState<RouteResult | null>(null);
+  const [routeNelio, setRouteNelio] = useState<RouteResult | null>(null);
+  const [routeHelton, setRouteHelton] = useState<RouteResult | null>(null);
   const [routeCaminhao, setRouteCaminhao] = useState<RouteResult | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [isGeocoding, setIsGeocoding] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
-  const [activeTab, setActiveTab] = useState<VehicleType | "all">("all");
+  const [activeTab, setActiveTab] = useState<RouteZone | "all">("all");
 
   useEffect(() => {
     setConfig(getConfig());
@@ -62,15 +63,25 @@ export default function Home() {
     (delivery: Delivery): Delivery => {
       if (!delivery.lat || !delivery.lng || !config) return delivery;
       const dist = haversineKm(origin.lat, origin.lng, delivery.lat, delivery.lng);
-      const vehicleType: VehicleType = dist <= (config.localRadiusKm ?? 50) ? "furgao" : "caminhao";
+      let vehicleType: RouteZone;
+      if (dist <= (config.localRadiusKm ?? 50)) {
+        // Local delivery: split by side of the factory's longitude
+        vehicleType = delivery.lng < origin.lng ? "furgao-nelio" : "furgao-helton";
+      } else {
+        vehicleType = "caminhao";
+      }
       return { ...delivery, distanceFromOrigin: Math.round(dist * 10) / 10, vehicleType };
     },
     [origin, config]
   );
 
-  // Split deliveries by type (unclassified defaults to furgão)
-  const furgaoDeliveries = useMemo(
-    () => deliveries.filter((d) => d.vehicleType !== "caminhao"),
+  // Split deliveries by driver zone (local) and long-distance (caminhão)
+  const nelioDeliveries = useMemo(
+    () => deliveries.filter((d) => d.vehicleType === "furgao-nelio"),
+    [deliveries]
+  );
+  const heltonDeliveries = useMemo(
+    () => deliveries.filter((d) => d.vehicleType === "furgao-helton"),
     [deliveries]
   );
   const caminhaoDeliveries = useMemo(
@@ -80,16 +91,18 @@ export default function Home() {
 
   // Active deliveries based on tab
   const activeDeliveries = useMemo(() => {
-    if (activeTab === "furgao") return furgaoDeliveries;
+    if (activeTab === "furgao-nelio") return nelioDeliveries;
+    if (activeTab === "furgao-helton") return heltonDeliveries;
     if (activeTab === "caminhao") return caminhaoDeliveries;
     return deliveries;
-  }, [activeTab, deliveries, furgaoDeliveries, caminhaoDeliveries]);
+  }, [activeTab, deliveries, nelioDeliveries, heltonDeliveries, caminhaoDeliveries]);
 
   const activeRoute = useMemo(() => {
-    if (activeTab === "furgao") return routeFurgao;
+    if (activeTab === "furgao-nelio") return routeNelio;
+    if (activeTab === "furgao-helton") return routeHelton;
     if (activeTab === "caminhao") return routeCaminhao;
     return null;
-  }, [activeTab, routeFurgao, routeCaminhao]);
+  }, [activeTab, routeNelio, routeHelton, routeCaminhao]);
 
   const geocodeDeliveries = useCallback(
     async (newDeliveries: Delivery[]): Promise<Delivery[]> => {
@@ -178,7 +191,8 @@ export default function Home() {
       newDeliveries = newDeliveries.map(classifyDelivery);
 
       setDeliveries((prev) => [...prev, ...newDeliveries]);
-      setRouteFurgao(null);
+      setRouteNelio(null);
+      setRouteHelton(null);
       setRouteCaminhao(null);
     },
     [geocodeDeliveries, classifyDelivery]
@@ -203,7 +217,8 @@ export default function Home() {
       newDelivery = classifyDelivery(geocoded[0]);
 
       setDeliveries((prev) => [...prev, newDelivery]);
-      setRouteFurgao(null);
+      setRouteNelio(null);
+      setRouteHelton(null);
       setRouteCaminhao(null);
     },
     [geocodeDeliveries, classifyDelivery]
@@ -211,7 +226,8 @@ export default function Home() {
 
   const handleRemove = useCallback((id: string) => {
     setDeliveries((prev) => prev.filter((d) => d.id !== id));
-    setRouteFurgao(null);
+    setRouteNelio(null);
+    setRouteHelton(null);
     setRouteCaminhao(null);
   }, []);
 
@@ -245,16 +261,29 @@ export default function Home() {
     const newErrors: string[] = [];
 
     try {
-      // Optimize furgão route (local)
-      if (furgaoDeliveries.filter((d) => d.lat && d.lng).length > 0) {
+      // Optimize Nélio route (local, oeste)
+      if (nelioDeliveries.filter((d) => d.lat && d.lng).length > 0) {
         try {
           const result = await optimizeGroup(
-            furgaoDeliveries,
+            nelioDeliveries,
             config?.vehicleConsumption ?? 10
           );
-          setRouteFurgao(result);
+          setRouteNelio(result);
         } catch (err) {
-          newErrors.push(`Furgão: ${(err as Error).message}`);
+          newErrors.push(`Nélio: ${(err as Error).message}`);
+        }
+      }
+
+      // Optimize Helton route (local, leste)
+      if (heltonDeliveries.filter((d) => d.lat && d.lng).length > 0) {
+        try {
+          const result = await optimizeGroup(
+            heltonDeliveries,
+            config?.vehicleConsumption ?? 10
+          );
+          setRouteHelton(result);
+        } catch (err) {
+          newErrors.push(`Helton: ${(err as Error).message}`);
         }
       }
 
@@ -275,11 +304,11 @@ export default function Home() {
         setErrors(newErrors);
       }
 
-      // Switch to the tab that has results
-      if (furgaoDeliveries.length > 0 && caminhaoDeliveries.length > 0) {
-        setActiveTab("furgao");
-      } else if (furgaoDeliveries.length > 0) {
-        setActiveTab("furgao");
+      // Switch to the first tab that has results
+      if (nelioDeliveries.length > 0) {
+        setActiveTab("furgao-nelio");
+      } else if (heltonDeliveries.length > 0) {
+        setActiveTab("furgao-helton");
       } else {
         setActiveTab("caminhao");
       }
@@ -288,11 +317,12 @@ export default function Home() {
     } finally {
       setIsOptimizing(false);
     }
-  }, [furgaoDeliveries, caminhaoDeliveries, optimizeGroup, config]);
+  }, [nelioDeliveries, heltonDeliveries, caminhaoDeliveries, optimizeGroup, config]);
 
   const handleClearAll = useCallback(() => {
     setDeliveries([]);
-    setRouteFurgao(null);
+    setRouteNelio(null);
+    setRouteHelton(null);
     setRouteCaminhao(null);
     setErrors([]);
     setActiveTab("all");
@@ -357,7 +387,8 @@ export default function Home() {
         <VehicleTabs
           activeTab={activeTab}
           onTabChange={setActiveTab}
-          furgaoCount={furgaoDeliveries.length}
+          nelioCount={nelioDeliveries.length}
+          heltonCount={heltonDeliveries.length}
           caminhaoCount={caminhaoDeliveries.length}
         />
       )}
@@ -371,8 +402,10 @@ export default function Home() {
             fuelLiters={activeRoute.fuelLiters}
             fuelCost={activeRoute.fuelCost}
             deliveryCount={
-              activeTab === "furgao"
-                ? furgaoDeliveries.filter((d) => d.lat && d.lng).length
+              activeTab === "furgao-nelio"
+                ? nelioDeliveries.filter((d) => d.lat && d.lng).length
+                : activeTab === "furgao-helton"
+                ? heltonDeliveries.filter((d) => d.lat && d.lng).length
                 : activeTab === "caminhao"
                 ? caminhaoDeliveries.filter((d) => d.lat && d.lng).length
                 : totalValidDeliveries
@@ -386,27 +419,42 @@ export default function Home() {
         </>
       )}
 
-      {/* Combined stats when both routes exist and viewing "all" */}
-      {activeTab === "all" && routeFurgao && routeCaminhao && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/40 rounded-xl p-4 transition-colors">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-lg">🚐</span>
-              <span className="font-semibold text-blue-800 dark:text-blue-300">Furgão (local)</span>
+      {/* Combined stats when routes exist and viewing "all" */}
+      {activeTab === "all" && (routeNelio || routeHelton || routeCaminhao) && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {routeNelio && (
+            <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/40 rounded-xl p-4 transition-colors">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-lg">🚐</span>
+                <span className="font-semibold text-blue-800 dark:text-blue-300">Nélio (oeste)</span>
+              </div>
+              <div className="text-sm text-blue-700 dark:text-blue-400 space-y-1">
+                <p>{nelioDeliveries.length} entregas - {routeNelio.totalDistanceKm} km - R$ {routeNelio.fuelCost.toFixed(2)}</p>
+              </div>
             </div>
-            <div className="text-sm text-blue-700 dark:text-blue-400 space-y-1">
-              <p>{furgaoDeliveries.length} entregas - {routeFurgao.totalDistanceKm} km - R$ {routeFurgao.fuelCost.toFixed(2)}</p>
+          )}
+          {routeHelton && (
+            <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800/40 rounded-xl p-4 transition-colors">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-lg">🚐</span>
+                <span className="font-semibold text-green-800 dark:text-green-300">Helton (leste)</span>
+              </div>
+              <div className="text-sm text-green-700 dark:text-green-400 space-y-1">
+                <p>{heltonDeliveries.length} entregas - {routeHelton.totalDistanceKm} km - R$ {routeHelton.fuelCost.toFixed(2)}</p>
+              </div>
             </div>
-          </div>
-          <div className="bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800/40 rounded-xl p-4 transition-colors">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-lg">🚛</span>
-              <span className="font-semibold text-orange-800 dark:text-orange-300">Caminhão (distante)</span>
+          )}
+          {routeCaminhao && (
+            <div className="bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800/40 rounded-xl p-4 transition-colors">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-lg">🚛</span>
+                <span className="font-semibold text-orange-800 dark:text-orange-300">Caminhão (distante)</span>
+              </div>
+              <div className="text-sm text-orange-700 dark:text-orange-400 space-y-1">
+                <p>{caminhaoDeliveries.length} entregas - {routeCaminhao.totalDistanceKm} km - R$ {routeCaminhao.fuelCost.toFixed(2)}</p>
+              </div>
             </div>
-            <div className="text-sm text-orange-700 dark:text-orange-400 space-y-1">
-              <p>{caminhaoDeliveries.length} entregas - {routeCaminhao.totalDistanceKm} km - R$ {routeCaminhao.fuelCost.toFixed(2)}</p>
-            </div>
-          </div>
+          )}
         </div>
       )}
 
@@ -415,7 +463,8 @@ export default function Home() {
         <div className="p-4 border-b border-gray-100 dark:border-[#1e3050] flex items-center justify-between">
           <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-100">
             Mapa de Entregas
-            {activeTab === "furgao" && <span className="text-sm font-normal text-blue-600 dark:text-blue-400 ml-2">🚐 Furgão (&lt;{config.localRadiusKm}km)</span>}
+            {activeTab === "furgao-nelio" && <span className="text-sm font-normal text-blue-600 dark:text-blue-400 ml-2">🚐 Nélio (oeste, &lt;{config.localRadiusKm}km)</span>}
+            {activeTab === "furgao-helton" && <span className="text-sm font-normal text-green-600 dark:text-green-400 ml-2">🚐 Helton (leste, &lt;{config.localRadiusKm}km)</span>}
             {activeTab === "caminhao" && <span className="text-sm font-normal text-orange-600 dark:text-orange-400 ml-2">🚛 Caminhão (&gt;{config.localRadiusKm}km)</span>}
           </h2>
           <div className="flex gap-2">
@@ -443,7 +492,13 @@ export default function Home() {
                     totalDistanceKm={activeRoute.totalDistanceKm}
                     totalTimeMinutes={activeRoute.totalTimeMinutes}
                     fuelCost={activeRoute.fuelCost}
-                    vehicleLabel={activeTab === "furgao" ? "🚐 Furgão" : "🚛 Caminhão"}
+                    vehicleLabel={
+                      activeTab === "furgao-nelio"
+                        ? "🚐 Nélio"
+                        : activeTab === "furgao-helton"
+                        ? "🚐 Helton"
+                        : "🚛 Caminhão"
+                    }
                   />
                 )}
                 <button

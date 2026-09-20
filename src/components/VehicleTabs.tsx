@@ -1,23 +1,26 @@
 "use client";
 
-import { VehicleType } from "@/lib/types";
+import { RouteZone } from "@/lib/types";
 
 interface VehicleTabsProps {
-  activeTab: VehicleType | "all";
-  onTabChange: (tab: VehicleType | "all") => void;
-  furgaoCount: number;
+  activeTab: RouteZone | "all";
+  onTabChange: (tab: RouteZone | "all") => void;
+  nelioCount: number;
+  heltonCount: number;
   caminhaoCount: number;
 }
 
 export default function VehicleTabs({
   activeTab,
   onTabChange,
-  furgaoCount,
+  nelioCount,
+  heltonCount,
   caminhaoCount,
 }: VehicleTabsProps) {
   const tabs = [
-    { key: "all" as const, label: "Todas", count: furgaoCount + caminhaoCount, icon: "📋" },
-    { key: "furgao" as const, label: "Furgão (local)", count: furgaoCount, icon: "🚐", color: "text-blue-600 dark:text-blue-400" },
+    { key: "all" as const, label: "Todas", count: nelioCount + heltonCount + caminhaoCount, icon: "📋" },
+    { key: "furgao-nelio" as const, label: "Nélio (oeste)", count: nelioCount, icon: "🚐", color: "text-blue-600 dark:text-blue-400" },
+    { key: "furgao-helton" as const, label: "Helton (leste)", count: heltonCount, icon: "🚐", color: "text-green-600 dark:text-green-400" },
     { key: "caminhao" as const, label: "Caminhão (distante)", count: caminhaoCount, icon: "🚛", color: "text-orange-600 dark:text-orange-400" },
   ];
 
