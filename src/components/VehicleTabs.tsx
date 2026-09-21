@@ -19,8 +19,8 @@ export default function VehicleTabs({
 }: VehicleTabsProps) {
   const tabs = [
     { key: "all" as const, label: "Todas", count: nelioCount + heltonCount + caminhaoCount, icon: "📋" },
-    { key: "furgao-nelio" as const, label: "Nélio (oeste)", count: nelioCount, icon: "🚐", color: "text-blue-600 dark:text-blue-400" },
-    { key: "furgao-helton" as const, label: "Helton (leste)", count: heltonCount, icon: "🚐", color: "text-green-600 dark:text-green-400" },
+    { key: "furgao-nelio" as const, label: "Nélio", count: nelioCount, icon: "🚐", color: "text-blue-600 dark:text-blue-400" },
+    { key: "furgao-helton" as const, label: "Helton", count: heltonCount, icon: "🚐", color: "text-green-600 dark:text-green-400" },
     { key: "caminhao" as const, label: "Caminhão (distante)", count: caminhaoCount, icon: "🚛", color: "text-orange-600 dark:text-orange-400" },
   ];
 

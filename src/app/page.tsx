@@ -12,6 +12,7 @@ import VehicleTabs from "@/components/VehicleTabs";
 import ShareRoute from "@/components/ShareRoute";
 import { Delivery, AppConfig, RouteZone, haversineKm } from "@/lib/types";
 import { getConfig } from "@/lib/config-store";
+import { splitDeliveriesBalanced } from "@/lib/routeSplit";
 
 const MapView = dynamic(() => import("@/components/MapView"), {
   ssr: false,
@@ -58,18 +59,16 @@ export default function Home() {
     [config]
   );
 
-  // Classify deliveries by vehicle type based on distance from origin
+  // Classify deliveries by distance from origin: local (furgão) vs long-distance (caminhão).
+  // Local deliveries are NOT split between Nélio/Helton yet — that split is computed
+  // dynamically (balancing time, distance and geographic compactness) only when the
+  // user clicks "Otimizar Rotas" (see handleOptimize below).
   const classifyDelivery = useCallback(
     (delivery: Delivery): Delivery => {
       if (!delivery.lat || !delivery.lng || !config) return delivery;
       const dist = haversineKm(origin.lat, origin.lng, delivery.lat, delivery.lng);
-      let vehicleType: RouteZone;
-      if (dist <= (config.localRadiusKm ?? 50)) {
-        // Local delivery: split by side of the factory's longitude
-        vehicleType = delivery.lng < origin.lng ? "furgao-nelio" : "furgao-helton";
-      } else {
-        vehicleType = "caminhao";
-      }
+      const vehicleType: RouteZone =
+        dist <= (config.localRadiusKm ?? 50) ? "furgao-local" : "caminhao";
       return { ...delivery, distanceFromOrigin: Math.round(dist * 10) / 10, vehicleType };
     },
     [origin, config]
@@ -86,6 +85,12 @@ export default function Home() {
   );
   const caminhaoDeliveries = useMemo(
     () => deliveries.filter((d) => d.vehicleType === "caminhao"),
+    [deliveries]
+  );
+
+  // Local deliveries still waiting for the Nélio/Helton split (assigned only on optimize)
+  const pendingLocalCount = useMemo(
+    () => deliveries.filter((d) => d.vehicleType === "furgao-local" && d.lat && d.lng).length,
     [deliveries]
   );
 
@@ -261,33 +266,55 @@ export default function Home() {
     const newErrors: string[] = [];
 
     try {
-      // Optimize Nélio route (local, oeste)
-      if (nelioDeliveries.filter((d) => d.lat && d.lng).length > 0) {
+      // Recalcula a divisão Nélio/Helton agora, testando várias combinações de
+      // rota para os dois motoristas e escolhendo a mais equilibrada (tempo,
+      // distância e proximidade) mantendo cada área compacta e contígua.
+      const localDeliveries = deliveries.filter(
+        (d) =>
+          d.vehicleType === "furgao-local" ||
+          d.vehicleType === "furgao-nelio" ||
+          d.vehicleType === "furgao-helton"
+      );
+      const { nelio: nelioGroup, helton: heltonGroup } = splitDeliveriesBalanced(
+        origin,
+        localDeliveries
+      );
+      const nelioIds = new Set(nelioGroup.map((d) => d.id));
+      const heltonIds = new Set(heltonGroup.map((d) => d.id));
+
+      setDeliveries((prev) =>
+        prev.map((d) => {
+          if (nelioIds.has(d.id)) return { ...d, vehicleType: "furgao-nelio" as const };
+          if (heltonIds.has(d.id)) return { ...d, vehicleType: "furgao-helton" as const };
+          return d;
+        })
+      );
+
+      // Optimize Nélio route (local)
+      if (nelioGroup.length > 0) {
         try {
-          const result = await optimizeGroup(
-            nelioDeliveries,
-            config?.vehicleConsumption ?? 10
-          );
+          const result = await optimizeGroup(nelioGroup, config?.vehicleConsumption ?? 10);
           setRouteNelio(result);
         } catch (err) {
           newErrors.push(`Nélio: ${(err as Error).message}`);
         }
+      } else {
+        setRouteNelio(null);
       }
 
-      // Optimize Helton route (local, leste)
-      if (heltonDeliveries.filter((d) => d.lat && d.lng).length > 0) {
+      // Optimize Helton route (local)
+      if (heltonGroup.length > 0) {
         try {
-          const result = await optimizeGroup(
-            heltonDeliveries,
-            config?.vehicleConsumption ?? 10
-          );
+          const result = await optimizeGroup(heltonGroup, config?.vehicleConsumption ?? 10);
           setRouteHelton(result);
         } catch (err) {
           newErrors.push(`Helton: ${(err as Error).message}`);
         }
+      } else {
+        setRouteHelton(null);
       }
 
-      // Optimize caminhão route (long distance)
+      // Optimize caminhão route (long distance) - unchanged
       if (caminhaoDeliveries.filter((d) => d.lat && d.lng).length > 0) {
         try {
           const result = await optimizeGroup(
@@ -305,9 +332,9 @@ export default function Home() {
       }
 
       // Switch to the first tab that has results
-      if (nelioDeliveries.length > 0) {
+      if (nelioGroup.length > 0) {
         setActiveTab("furgao-nelio");
-      } else if (heltonDeliveries.length > 0) {
+      } else if (heltonGroup.length > 0) {
         setActiveTab("furgao-helton");
       } else {
         setActiveTab("caminhao");
@@ -317,7 +344,7 @@ export default function Home() {
     } finally {
       setIsOptimizing(false);
     }
-  }, [nelioDeliveries, heltonDeliveries, caminhaoDeliveries, optimizeGroup, config]);
+  }, [deliveries, origin, caminhaoDeliveries, optimizeGroup, config]);
 
   const handleClearAll = useCallback(() => {
     setDeliveries([]);
@@ -382,6 +409,13 @@ export default function Home() {
         </div>
       )}
 
+      {pendingLocalCount > 0 && (
+        <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-[#0d1829] border border-gray-200 dark:border-[#1e3050] rounded-lg p-3">
+          {pendingLocalCount} entrega{pendingLocalCount > 1 ? "s" : ""} local
+          {pendingLocalCount > 1 ? "is" : ""} aguardando otimização para definir o motorista (Nélio ou Helton).
+        </div>
+      )}
+
       {/* Vehicle tabs */}
       {deliveries.length > 0 && (
         <VehicleTabs
@@ -426,7 +460,7 @@ export default function Home() {
             <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/40 rounded-xl p-4 transition-colors">
               <div className="flex items-center gap-2 mb-2">
                 <span className="text-lg">🚐</span>
-                <span className="font-semibold text-blue-800 dark:text-blue-300">Nélio (oeste)</span>
+                <span className="font-semibold text-blue-800 dark:text-blue-300">Nélio</span>
               </div>
               <div className="text-sm text-blue-700 dark:text-blue-400 space-y-1">
                 <p>{nelioDeliveries.length} entregas - {routeNelio.totalDistanceKm} km - R$ {routeNelio.fuelCost.toFixed(2)}</p>
@@ -437,7 +471,7 @@ export default function Home() {
             <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800/40 rounded-xl p-4 transition-colors">
               <div className="flex items-center gap-2 mb-2">
                 <span className="text-lg">🚐</span>
-                <span className="font-semibold text-green-800 dark:text-green-300">Helton (leste)</span>
+                <span className="font-semibold text-green-800 dark:text-green-300">Helton</span>
               </div>
               <div className="text-sm text-green-700 dark:text-green-400 space-y-1">
                 <p>{heltonDeliveries.length} entregas - {routeHelton.totalDistanceKm} km - R$ {routeHelton.fuelCost.toFixed(2)}</p>
@@ -463,8 +497,8 @@ export default function Home() {
         <div className="p-4 border-b border-gray-100 dark:border-[#1e3050] flex items-center justify-between">
           <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-100">
             Mapa de Entregas
-            {activeTab === "furgao-nelio" && <span className="text-sm font-normal text-blue-600 dark:text-blue-400 ml-2">🚐 Nélio (oeste, &lt;{config.localRadiusKm}km)</span>}
-            {activeTab === "furgao-helton" && <span className="text-sm font-normal text-green-600 dark:text-green-400 ml-2">🚐 Helton (leste, &lt;{config.localRadiusKm}km)</span>}
+            {activeTab === "furgao-nelio" && <span className="text-sm font-normal text-blue-600 dark:text-blue-400 ml-2">🚐 Nélio (&lt;{config.localRadiusKm}km)</span>}
+            {activeTab === "furgao-helton" && <span className="text-sm font-normal text-green-600 dark:text-green-400 ml-2">🚐 Helton (&lt;{config.localRadiusKm}km)</span>}
             {activeTab === "caminhao" && <span className="text-sm font-normal text-orange-600 dark:text-orange-400 ml-2">🚛 Caminhão (&gt;{config.localRadiusKm}km)</span>}
           </h2>
           <div className="flex gap-2">

@@ -1,7 +1,9 @@
 export type VehicleType = "furgao" | "caminhao";
 
-// The three delivery routes: local split by driver zone (Nélio/Helton) + long-distance (caminhão)
-export type RouteZone = "furgao-nelio" | "furgao-helton" | "caminhao";
+// Delivery routing zones: local deliveries start as "furgao-local" and are split
+// between Nélio/Helton dynamically when the user clicks "Otimizar Rotas"
+// (see src/lib/routeSplit.ts); long-distance deliveries go to "caminhao".
+export type RouteZone = "furgao-local" | "furgao-nelio" | "furgao-helton" | "caminhao";
 
 export interface Delivery {
   id: string;
