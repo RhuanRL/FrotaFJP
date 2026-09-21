@@ -2,6 +2,14 @@
 
 import { useState } from "react";
 import { Delivery } from "@/lib/types";
+import { FAST_ACAI_LOGO_BASE64 } from "@/lib/fastAcaiLogo";
+
+interface RouteLeg {
+  deliveryId: string;
+  order: number;
+  distanceKm: number;
+  timeMinutes: number;
+}
 
 interface ShareRouteProps {
   deliveries: Delivery[];
@@ -11,6 +19,7 @@ interface ShareRouteProps {
   totalTimeMinutes: number;
   fuelCost: number;
   vehicleLabel?: string;
+  legs?: RouteLeg[];
 }
 
 function getOrderCount(delivery: Delivery): number {
@@ -30,9 +39,16 @@ export default function ShareRoute({
   totalTimeMinutes,
   fuelCost,
   vehicleLabel,
+  legs,
 }: ShareRouteProps) {
   const [showMenu, setShowMenu] = useState(false);
   const [copied, setCopied] = useState(false);
+
+  // Distance/time of the last leg (last stop back to the factory) — already
+  // included in totalDistanceKm/totalTimeMinutes, shown separately so the
+  // printed sheet and the WhatsApp text make that explicit instead of just
+  // implying it.
+  const returnLeg = legs?.find((l) => l.deliveryId === "return-origin");
 
   // Get ordered deliveries (excluding origin)
   const stopIds = routeOrder.filter((id) => id !== "origin");
@@ -88,7 +104,7 @@ export default function ShareRoute({
     let text = `🚚 *ROTA DE ENTREGAS - FAST AÇAÍ*\n`;
     text += `📅 ${new Date().toLocaleDateString("pt-BR")}\n`;
     if (vehicleLabel) text += `🚐 ${vehicleLabel}\n`;
-    text += `📍 ${orderedDeliveries.length} paradas | ${totalDistanceKm}km | ~${timeStr} | R$${fuelCost.toFixed(2)} combustível\n`;
+    text += `📍 ${orderedDeliveries.length} paradas + retorno | ${totalDistanceKm}km | ~${timeStr} | R$${fuelCost.toFixed(2)} combustível\n`;
     text += `\n`;
 
     orderedDeliveries.forEach((d, idx) => {
@@ -102,7 +118,9 @@ export default function ShareRoute({
       text += `\n`;
     });
 
-    text += `🏭 *RETORNO À FÁBRICA*\n\n`;
+    text += returnLeg
+      ? `🏭 *RETORNO À FÁBRICA* (${returnLeg.distanceKm}km, ~${returnLeg.timeMinutes}min)\n\n`
+      : `🏭 *RETORNO À FÁBRICA*\n\n`;
 
     // Add Google Maps link
     const originStr = `${origin.lat},${origin.lng}`;
@@ -143,18 +161,23 @@ export default function ShareRoute({
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: Arial, sans-serif; padding: 20px; color: #111; font-size: 12px; }
     .header { text-align: center; border-bottom: 2px solid #7c3aed; padding-bottom: 12px; margin-bottom: 16px; }
+    .header .logo { height: 60px; display: block; margin: 0 auto 8px; }
     .header h1 { font-size: 18px; color: #7c3aed; }
     .header p { font-size: 11px; color: #666; margin-top: 4px; }
     .summary { display: flex; gap: 16px; justify-content: center; margin-bottom: 16px; padding: 10px; background: #f3f0ff; border-radius: 8px; }
     .summary-item { text-align: center; }
     .summary-item .value { font-size: 16px; font-weight: bold; color: #7c3aed; }
     .summary-item .label { font-size: 10px; color: #666; }
+    .summary-note { text-align: center; font-size: 10px; color: #888; margin: -8px 0 12px; }
     table { width: 100%; border-collapse: collapse; margin-top: 8px; }
     th { background: #7c3aed; color: white; padding: 8px 6px; text-align: left; font-size: 11px; }
-    td { padding: 7px 6px; border-bottom: 1px solid #e5e7eb; font-size: 11px; }
+    td { padding: 8px 6px; border-bottom: 1px solid #e5e7eb; font-size: 11px; vertical-align: middle; }
     tr:nth-child(even) { background: #faf9ff; }
     .stop-num { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 50%; background: #7c3aed; color: white; font-weight: bold; font-size: 13px; }
     .orders-badge { display: inline-block; background: #f59e0b; color: white; border-radius: 10px; padding: 1px 7px; font-size: 10px; font-weight: bold; }
+    .sig-cell { min-width: 140px; }
+    .sig-line { border-bottom: 1px solid #999; height: 26px; margin-bottom: 2px; }
+    .sig-label { font-size: 8px; color: #999; text-align: center; }
     .footer { margin-top: 20px; padding-top: 12px; border-top: 1px solid #ddd; display: flex; justify-content: space-between; }
     .footer p { font-size: 10px; color: #999; }
     .signature { margin-top: 40px; display: flex; gap: 60px; justify-content: center; }
@@ -164,6 +187,7 @@ export default function ShareRoute({
 </head>
 <body>
   <div class="header">
+    <img class="logo" src="${FAST_ACAI_LOGO_BASE64}" alt="Fast Açaí" />
     <h1>ROTA DE ENTREGAS - FAST AÇAÍ</h1>
     <p>${new Date().toLocaleDateString("pt-BR", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}${vehicleLabel ? ` | ${vehicleLabel}` : ""}</p>
   </div>
@@ -175,17 +199,18 @@ export default function ShareRoute({
     </div>
     <div class="summary-item">
       <div class="value">${totalDistanceKm} km</div>
-      <div class="label">Distância</div>
+      <div class="label">Distância total</div>
     </div>
     <div class="summary-item">
       <div class="value">${timeStr}</div>
-      <div class="label">Tempo est.</div>
+      <div class="label">Tempo est. total</div>
     </div>
     <div class="summary-item">
       <div class="value">R$ ${fuelCost.toFixed(2)}</div>
       <div class="label">Combustível</div>
     </div>
   </div>
+  <p class="summary-note">${orderedDeliveries.length} paradas de entrega + retorno à fábrica${returnLeg ? ` (${returnLeg.distanceKm} km, ~${returnLeg.timeMinutes} min)` : ""} — já incluído na distância e no tempo totais acima.</p>
 
   <table>
     <thead>
@@ -195,7 +220,7 @@ export default function ShareRoute({
         <th>Endereço / CEP</th>
         <th style="width:50px">Pedidos</th>
         <th style="width:70px">Valor</th>
-        <th style="width:28px">✓</th>
+        <th class="sig-cell">Assinatura de Recebimento</th>
       </tr>
     </thead>
     <tbody>
@@ -211,13 +236,18 @@ export default function ShareRoute({
           <td>${d.address || ""}<br/><strong>${d.cep}</strong> - ${d.city || ""}</td>
           <td style="text-align:center">${ordersBadge}</td>
           <td>${d.value ? "R$ " + d.value.toFixed(2) : "-"}</td>
-          <td style="text-align:center">☐</td>
+          <td class="sig-cell">
+            <div class="sig-line"></div>
+            <div class="sig-label">Nome e assinatura de quem recebeu</div>
+          </td>
         </tr>`;
         })
         .join("")}
       <tr style="background:#f0fdf4">
         <td><span class="stop-num" style="background:#16a34a">⟳</span></td>
-        <td colspan="5"><strong>RETORNO À FÁBRICA</strong> - Rua Guarai, Vila Brasília, Aparecida de Goiânia</td>
+        <td colspan="5"><strong>RETORNO À FÁBRICA</strong> - Rua Guarai, Vila Brasília, Aparecida de Goiânia${
+          returnLeg ? ` <span style="color:#16a34a">(${returnLeg.distanceKm} km, ~${returnLeg.timeMinutes} min)</span>` : ""
+        }</td>
       </tr>
     </tbody>
   </table>

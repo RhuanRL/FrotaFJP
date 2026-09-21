@@ -526,6 +526,7 @@ export default function Home() {
                     totalDistanceKm={activeRoute.totalDistanceKm}
                     totalTimeMinutes={activeRoute.totalTimeMinutes}
                     fuelCost={activeRoute.fuelCost}
+                    legs={activeRoute.legs}
                     vehicleLabel={
                       activeTab === "furgao-nelio"
                         ? "🚐 Nélio"
