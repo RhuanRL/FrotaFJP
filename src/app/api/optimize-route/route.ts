@@ -183,7 +183,10 @@ function twoOptImprove(tour: number[], distances: number[][]): number[] {
   return best;
 }
 
-// Or-opt: try moving each stop to its best position in the tour
+// Or-opt: try moving segments of 1, 2 or 3 consecutive stops (in normal or
+// reversed order) to their best position elsewhere in the tour. Checking
+// multi-stop segments (not just single stops) is what catches cases like
+// "stop 8 is basically on the way to stop 1, just deliver it first".
 function orOptImprove(tour: number[], distances: number[][]): number[] {
   let best = [...tour];
   let bestDist = tourDistance(best, distances);
@@ -191,38 +194,106 @@ function orOptImprove(tour: number[], distances: number[][]): number[] {
 
   while (improved) {
     improved = false;
-    // Don't move origin (index 0)
-    for (let i = 1; i < best.length; i++) {
-      const node = best[i];
-      const without = [...best.slice(0, i), ...best.slice(i + 1)];
 
-      for (let j = 1; j <= without.length; j++) {
-        if (j === i) continue; // Same position
-        const candidate = [...without.slice(0, j), node, ...without.slice(j)];
-        const candidateDist = tourDistance(candidate, distances);
+    for (let segLen = 1; segLen <= 3 && !improved; segLen++) {
+      // Don't move origin (index 0)
+      for (let i = 1; i <= best.length - segLen && !improved; i++) {
+        const segment = best.slice(i, i + segLen);
+        const without = [...best.slice(0, i), ...best.slice(i + segLen)];
 
-        if (candidateDist < bestDist - 0.01) {
-          best = candidate;
-          bestDist = candidateDist;
-          improved = true;
-          break; // Restart outer loop
+        for (let j = 1; j <= without.length && !improved; j++) {
+          const orientations =
+            segLen > 1 ? [segment, [...segment].reverse()] : [segment];
+
+          for (const seg of orientations) {
+            const candidate = [...without.slice(0, j), ...seg, ...without.slice(j)];
+            const candidateDist = tourDistance(candidate, distances);
+
+            if (candidateDist < bestDist - 0.01) {
+              best = candidate;
+              bestDist = candidateDist;
+              improved = true;
+              break; // Restart from the top
+            }
+          }
         }
       }
-      if (improved) break;
     }
   }
 
   return best;
 }
 
-// Full optimization: multi-start NN → 2-opt → or-opt
+// Runs 2-opt and or-opt back-to-back until neither improves the tour anymore
+function localSearch(tour: number[], distances: number[][]): number[] {
+  let current = tour;
+  let previousDist = Infinity;
+  let currentDist = tourDistance(current, distances);
+  let rounds = 0;
+
+  while (currentDist < previousDist - 0.01 && rounds < 25) {
+    previousDist = currentDist;
+    current = twoOptImprove(current, distances);
+    current = orOptImprove(current, distances);
+    currentDist = tourDistance(current, distances);
+    rounds++;
+  }
+
+  return current;
+}
+
+// Classic 4-opt "double bridge" perturbation: cuts the tour into 4 pieces and
+// reconnects them in a different order. Unlike a 2-opt/or-opt move, this can't
+// be undone by a single further 2-opt/or-opt move — which is what lets the
+// search escape a local optimum instead of always converging back to the same tour.
+function doubleBridge(tour: number[]): number[] {
+  const n = tour.length;
+  if (n < 8) return [...tour]; // too few stops for a meaningful 4-way cut
+
+  const positions = new Set<number>();
+  while (positions.size < 3) {
+    positions.add(1 + Math.floor(Math.random() * (n - 1)));
+  }
+  const [p1, p2, p3] = [...positions].sort((a, b) => a - b);
+
+  const seg1 = tour.slice(0, p1);
+  const seg2 = tour.slice(p1, p2);
+  const seg3 = tour.slice(p2, p3);
+  const seg4 = tour.slice(p3);
+
+  return [...seg1, ...seg3, ...seg2, ...seg4];
+}
+
+// Full optimization: multi-start NN → (2-opt + or-opt until convergence) →
+// iterated local search (double-bridge kick + re-converge, keep the best tour).
+// The iterated part is what makes this "caprichoso": it keeps trying different
+// escapes from the current best route instead of stopping at the first local
+// optimum, while staying inside a small time budget so it never holds up the
+// request (fewer kicks are used for larger delivery lists to stay fast).
 function optimizeTour(distances: number[][]): number[] {
-  let tour = multiStartNearestNeighbor(distances);
-  tour = twoOptImprove(tour, distances);
-  tour = orOptImprove(tour, distances);
-  // Run 2-opt again after or-opt for final polish
-  tour = twoOptImprove(tour, distances);
-  return tour;
+  const n = distances.length;
+  const startedAt = Date.now();
+  const timeBudgetMs = 4000; // leave room for the OSRM geometry calls that follow
+
+  let best = localSearch(multiStartNearestNeighbor(distances), distances);
+  let bestDist = tourDistance(best, distances);
+
+  const maxIterations = n <= 12 ? 60 : n <= 30 ? 35 : n <= 60 ? 15 : 6;
+
+  for (let iter = 0; iter < maxIterations; iter++) {
+    if (Date.now() - startedAt > timeBudgetMs) break;
+
+    const kicked = doubleBridge(best);
+    const improved = localSearch(kicked, distances);
+    const improvedDist = tourDistance(improved, distances);
+
+    if (improvedDist < bestDist - 0.01) {
+      best = improved;
+      bestDist = improvedDist;
+    }
+  }
+
+  return best;
 }
 
 // Fetch real road geometry between two points from OSRM
